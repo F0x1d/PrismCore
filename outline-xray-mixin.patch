@@ -54,7 +54,7 @@ index 0000000000000000000000000000000000000000..54016aaac44b49836396af1928cc4eb5
 +	"github.com/Jigsaw-Code/outline-sdk/transport/socks5"
 +)
 +
-+// Socks5Config is the format for the SOCKS5 config.
++// ShadowsocksConfig is the format for the Shadowsocks config. It can specify Dialers or PacketListener.
 +type Socks5Config struct {
 +	Endpoint ConfigNode
 +	User     string
@@ -96,9 +96,16 @@ index 0000000000000000000000000000000000000000..54016aaac44b49836396af1928cc4eb5
 +	if err != nil {
 +		return nil, fmt.Errorf("failed to create PacketEndpoint: %w", err)
 +	}
++	// pl, err := socks5.NewPacketListener(transport.FuncPacketEndpoint(pe.Connect))
++	// if err != nil {
++	// 	return nil, fmt.Errorf("failed to create PacketListener: %w", err)
++	// }
 +
 +	sd.EnablePacket(&transport.UDPDialer{})
++	// conn, err := client.ListenPacket(context.Background())
 +
++	// For the Shadowsocks transport, the prefix only applies to TCP. To use a prefix with UDP, one needs to
++	// specify it in the PacketListener config explicitly. This is to ensure backwards-compatibility.
 +	return &TransportPair{
 +		&Dialer[transport.StreamConn]{ConnectionProviderInfo{ConnTypeTunneled, se.FirstHop}, sd.DialStream},
 +		&PacketListener{ConnectionProviderInfo{ConnTypeTunneled, pe.FirstHop}, sd},
@@ -108,6 +115,7 @@ index 0000000000000000000000000000000000000000..54016aaac44b49836396af1928cc4eb5
 +func parseSocks5Config(node ConfigNode) (*Socks5Config, error) {
 +	switch typed := node.(type) {
 +	case map[string]any:
++		// If the map has an "endpoint" field, we assume the new format.
 +		if _, ok := typed["endpoint"]; ok {
 +			config := Socks5Config{}
 +			if err := mapToAny(typed, &config); err != nil {
@@ -115,12 +123,32 @@ index 0000000000000000000000000000000000000000..54016aaac44b49836396af1928cc4eb5
 +			}
 +			return &config, nil
 +		} else {
-+			return nil, fmt.Errorf("socks5 config missing endpoint")
++			return nil, fmt.Errorf("shadowsocks config missing endpoint")
 +		}
 +	default:
-+		return nil, fmt.Errorf("invalid socks5 config type %T", typed)
++		return nil, fmt.Errorf("invalid shadowsocks config type %T", typed)
 +	}
 +}
+diff --git forkSrcPrefix/client/go/outline/client_test.go forkDstPrefix/client/go/outline/client_test.go
+index ceee7986f7ee0bfe4e3d49ca816283333b58bc68..6c8c59859e10edf148d50682a1fc830932946a7e 100644
+--- forkSrcPrefix/client/go/outline/client_test.go
++++ forkDstPrefix/client/go/outline/client_test.go
+@@ -148,6 +148,15 @@ udp:
+ 	require.Equal(t, "example.com:53", result.Client.pl.FirstHop)
+ }
+ 
++func Test_NewTransport_Socks5(t *testing.T) {
++	config := `
++    endpoint: example.com:120`
++	result := NewClient(config)
++	require.Nil(t, result.Error, "Got %v", result.Error)
++	require.Equal(t, "example.com:120", result.Client.sd.FirstHop)
++	require.Equal(t, "example.com:120", result.Client.pl.FirstHop)
++}
++
+ func Test_NewTransport_YAML_Reuse(t *testing.T) {
+ 	config := `
+ $type: tcpudp
 diff --git forkSrcPrefix/go.mod forkDstPrefix/go.mod
 index c8d64de07fa112e4e1f07cd8ad84cc0776034e5f..bb8f93adae3955b41824014c3310327a1d7c6684 100644
 --- forkSrcPrefix/go.mod
