@@ -1,0 +1,196 @@
+name: Build PrismCore XCFramework
+
+on:
+  workflow_dispatch:
+    inputs:
+      xray_version:
+        description: 'Xray-core / libXray version tag'
+        required: true
+        default: 'v25.10.15'
+      outline_version:
+        description: 'outline-apps tag'
+        required: true
+        default: 'client_ios/v1.15.2'
+
+env:
+  XRAY_VERSION: ${{ github.event.inputs.xray_version || 'v25.10.15' }}
+  OUTLINE_VERSION: ${{ github.event.inputs.outline_version || 'client_ios/v1.15.2' }}
+  FRAMEWORK_NAME: PrismCore
+  BUNDLE_ID: com.prismcore.framework
+  IOS_MIN_VERSION: '15.5'
+  GO_VERSION: '1.24.0'
+  NODE_VERSION: '22'
+  PYTHON_VERSION: '3.12'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout PrismCore
+        uses: actions/checkout@v4
+        with:
+          path: PrismCore
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # ── Clone dependencies ───────────────────────────────────────────
+      - name: Clone Xray-core
+        run: |
+          git clone https://github.com/XTLS/Xray-core.git
+          cd Xray-core
+          git checkout ${{ env.XRAY_VERSION }}
+
+      - name: Clone libXray
+        run: |
+          git clone https://github.com/XTLS/libXray.git
+          cd libXray
+          git checkout ${{ env.XRAY_VERSION }}
+
+      - name: Clone outline-apps
+        run: |
+          git clone https://github.com/Jigsaw-Code/outline-apps.git
+          cd outline-apps
+          git checkout ${{ env.OUTLINE_VERSION }}
+
+      # ── Clone Hysteria (full repo, needed for core/ and extras/) ───
+      - name: Clone Hysteria
+        run: |
+          git clone https://github.com/apernet/hysteria.git
+
+      # ── Prepare outline-apps build environment ───────────────────────
+      - name: Install outline-apps JS deps & prepare Go environment
+        working-directory: outline-apps
+        run: |
+          npm install chalk
+          # This may partially fail but sets up the Go mobile tooling
+          npm run action client/src/cordova/build ios || true
+
+      # ── Build gomobile + gobind via libXray ──────────────────────────
+      - name: Build gomobile tooling via libXray
+        working-directory: libXray
+        run: |
+          python3 build/main.py apple gomobile
+
+      # ── Mix all libraries into outline-apps ──────────────────────────
+      - name: Copy libXray wrappers into outline-apps
+        run: |
+          mkdir -p outline-apps/client/go/libXray
+          cp libXray/xray_wrapper.go outline-apps/client/go/libXray/
+          cp libXray/nodep_wrapper.go outline-apps/client/go/libXray/
+
+      - name: Copy Hysteria mobile bindings into outline-apps
+        run: |
+          mkdir -p outline-apps/client/go/hysteria
+          cp PrismCore/hysteria-mobile/mobile.go outline-apps/client/go/hysteria/
+          cp PrismCore/hysteria-mobile/socks5.go outline-apps/client/go/hysteria/
+
+      - name: Apply outline-xray-mixin patch
+        working-directory: outline-apps
+        run: |
+          git apply ../PrismCore/outline-xray-mixin.patch
+
+      - name: Add Hysteria replace directives and dependency to go.mod
+        working-directory: outline-apps
+        run: |
+          # Add replace directives for Hysteria modules
+          cat >> go.mod << 'GOMOD'
+
+          replace github.com/apernet/hysteria/core/v2 => ../hysteria/core
+          replace github.com/apernet/hysteria/extras/v2 => ../hysteria/extras
+          GOMOD
+
+          # Add hysteria dependencies to require block
+          go get github.com/apernet/hysteria/core/v2
+          go get github.com/apernet/hysteria/extras/v2
+          go get github.com/txthinking/socks5@v0.0.0-20230325130024-4230056ae301
+
+      - name: Update package imports for hysteria bindings
+        working-directory: outline-apps/client/go/hysteria
+        run: |
+          # The hysteria mobile bindings use `package mobile`, rename to `hysteria`
+          # so it doesn't conflict with other packages and is its own gobind package
+          sed -i '' 's/^package mobile$/package hysteria/' mobile.go socks5.go
+
+      - name: Tidy go modules
+        working-directory: outline-apps
+        run: |
+          go mod tidy
+
+      # ── Build the combined XCFramework ───────────────────────────────
+      - name: Build PrismCore.xcframework
+        working-directory: outline-apps
+        run: |
+          export GOMOBILE=$(pwd)/client/output/build/bin/gomobile
+          export PATH="$(pwd)/client/output/build/bin:$PATH"
+
+          # If gomobile wasn't built by outline's build process, install it
+          if [ ! -f "$GOMOBILE" ]; then
+            go install golang.org/x/mobile/cmd/gomobile@latest
+            go install golang.org/x/mobile/cmd/gobind@latest
+            GOMOBILE=$(go env GOPATH)/bin/gomobile
+            $GOMOBILE init
+          fi
+
+          mkdir -p output
+
+          $GOMOBILE bind \
+            -ldflags='-s -w' \
+            -target=ios,iossimulator,macos,maccatalyst \
+            -iosversion=${{ env.IOS_MIN_VERSION }} \
+            -bundleid ${{ env.BUNDLE_ID }} \
+            -o "output/${{ env.FRAMEWORK_NAME }}.xcframework" \
+            "$(pwd)/client/go/outline/platerrors" \
+            "$(pwd)/client/go/outline/tun2socks" \
+            "$(pwd)/client/go/outline" \
+            "$(pwd)/client/go/libXray" \
+            "$(pwd)/client/go/hysteria"
+
+      # ── Package and upload ───────────────────────────────────────────
+      - name: Compress XCFramework
+        working-directory: outline-apps/output
+        run: |
+          zip -ry ${{ env.FRAMEWORK_NAME }}.xcframework.zip ${{ env.FRAMEWORK_NAME }}.xcframework
+          shasum -a 256 ${{ env.FRAMEWORK_NAME }}.xcframework.zip > ${{ env.FRAMEWORK_NAME }}.xcframework.zip.sha256
+          cat ${{ env.FRAMEWORK_NAME }}.xcframework.zip.sha256
+
+      - name: Upload XCFramework artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FRAMEWORK_NAME }}.xcframework
+          path: |
+            outline-apps/output/${{ env.FRAMEWORK_NAME }}.xcframework.zip
+            outline-apps/output/${{ env.FRAMEWORK_NAME }}.xcframework.zip.sha256
+
+      - name: Generate release tag
+        id: tag
+        run: |
+          TAG="v$(date +'%Y.%m.%d')-${GITHUB_RUN_NUMBER}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Generated tag: $TAG"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || steps.tag.outputs.tag }}
+          name: "${{ env.FRAMEWORK_NAME }} ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || steps.tag.outputs.tag }}"
+          generate_release_notes: true
+          files: |
+            outline-apps/output/${{ env.FRAMEWORK_NAME }}.xcframework.zip
+            outline-apps/output/${{ env.FRAMEWORK_NAME }}.xcframework.zip.sha256
