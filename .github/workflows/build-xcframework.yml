@@ -116,6 +116,11 @@ jobs:
           replace github.com/apernet/hysteria/extras/v2 => ../hysteria/extras
           GOMOD
 
+          # Upgrade quic-go/quic-go to v0.59.0 — outline/xray pull v0.55.0 which
+          # uses qpack v0.5.x, but hysteria needs qpack v0.6.0. Upstream v0.57.0+
+          # already uses qpack v0.6.0 so both sides are satisfied.
+          go get github.com/quic-go/quic-go@v0.59.0
+
           # Add hysteria dependencies to require block
           go get github.com/apernet/hysteria/core/v2
           go get github.com/apernet/hysteria/extras/v2
