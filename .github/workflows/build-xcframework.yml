@@ -109,16 +109,9 @@ jobs:
       - name: Add Hysteria replace directives and dependency to go.mod
         working-directory: outline-apps
         run: |
-          # Add replace directives for Hysteria modules
-          cat >> go.mod << 'GOMOD'
-
-          replace github.com/apernet/hysteria/core/v2 => ../hysteria/core
-          replace github.com/apernet/hysteria/extras/v2 => ../hysteria/extras
-          GOMOD
-
-          go mod edit -replace github.com/quic-go/quic-go=github.com/apernet/quic-go@v0.57.2-0.20260111184307-eec823306178
-
-          # Add hysteria dependencies to require block
+          go mod edit -replace github.com/apernet/hysteria/core/v2=../hysteria/core
+          go mod edit -replace github.com/apernet/hysteria/extras/v2=../hysteria/extras
+          go get github.com/quic-go/quic-go@v0.59.0
           go get github.com/apernet/hysteria/core/v2
           go get github.com/apernet/hysteria/extras/v2
           go get github.com/txthinking/socks5@v0.0.0-20230325130024-4230056ae301
