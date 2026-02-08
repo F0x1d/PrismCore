@@ -148,12 +148,11 @@ func (c *HysteriaClient) Start() error {
 	hopInterval := time.Duration(c.config.HopIntervalSec) * time.Second
 	connFactory := &adaptiveConnFactory{
 		isHop:       isHop,
-		hopAddr:     serverAddr.(*udphop.UDPHopAddr), // nil-safe: only used when isHop=true
 		hopInterval: hopInterval,
 		obfuscator:  obfuscator,
 	}
-	if !isHop {
-		connFactory.hopAddr = nil // keep it clean
+	if isHop {
+		connFactory.hopAddr = serverAddr.(*udphop.UDPHopAddr)
 	}
 
 	handler := c.handler
